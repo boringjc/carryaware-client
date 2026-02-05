@@ -50,4 +50,12 @@
     "typescript": "~5.9.2"
   },
   "private": true
+
+  {
+  "scripts": {
+    "start": "expo start --tunnel",
+    "start:clear": "expo start --tunnel --clear"
+  }
+}
+
 }
