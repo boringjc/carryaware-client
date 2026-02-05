@@ -11,6 +11,14 @@ type AlertState = {
   insideFeatureIds: Set<string>;
 };
 
+const SENSITIVITY_PRESETS = {
+  tight: 0.7,
+  normal: 1.0,
+  wide: 1.3,
+} as const;
+
+export type SensitivityLevel = keyof typeof SENSITIVITY_PRESETS;
+
 export type DebugState = {
   lat?: number;
   lon?: number;
@@ -33,12 +41,25 @@ export type DebugState = {
   lastAlertName?: string;
   lastAlertCategory?: string;
 
+  // New: sensitivity visibility
+  sensitivity?: SensitivityLevel;
+  bufferMultiplier?: number;
+  nearestBaseBufferM?: number;
+  nearestEffectiveBufferM?: number;
+
   lastError?: string;
 };
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
 
 export function useSensitiveAreaAlerts() {
   const [status, setStatus] = useState("init");
   const [debug, setDebug] = useState<DebugState>({});
+
+  // New: allow client to adjust sensitivity
+  const [sensitivity, setSensitivity] = useState<SensitivityLevel>("normal");
 
   const manifestRef = useRef<Manifest | null>(null);
   const alertState = useRef<AlertState>({
@@ -99,6 +120,8 @@ export function useSensitiveAreaAlerts() {
               tilesLoaded: tilesToLoad.length,
               datasetVersion: manifest.dataset_version,
               lastError: undefined,
+              sensitivity,
+              bufferMultiplier: SENSITIVITY_PRESETS[sensitivity],
             }));
 
             const features: Feature[] = [];
@@ -114,9 +137,13 @@ export function useSensitiveAreaAlerts() {
               featuresEvaluated: features.length,
             }));
 
+            const multiplier = SENSITIVITY_PRESETS[sensitivity];
+
             let nearestMeters = Number.POSITIVE_INFINITY;
             let nearestName = "";
             let nearestCategory = "";
+            let nearestBaseBufferM = 0;
+            let nearestEffectiveBufferM = 0;
 
             const newlyInside: Feature[] = [];
             const stillInside = new Set<string>();
@@ -124,14 +151,24 @@ export function useSensitiveAreaAlerts() {
             for (const f of features) {
               const dist = haversineMeters(lat, lon, f.lat, f.lon);
 
+              // Nearest tracking
               if (dist < nearestMeters) {
                 nearestMeters = dist;
                 nearestName = f.name;
                 nearestCategory = f.category;
+
+                const baseBuffer = typeof f.buffer_m === "number" ? f.buffer_m : 0;
+                const effective = clamp(baseBuffer * multiplier, 50, 500);
+
+                nearestBaseBufferM = baseBuffer;
+                nearestEffectiveBufferM = effective;
               }
 
-              const buffer = typeof f.buffer_m === "number" ? f.buffer_m : 0;
-              if (buffer > 0 && dist <= buffer) {
+              // Inside detection with sensitivity multiplier
+              const baseBuffer = typeof f.buffer_m === "number" ? f.buffer_m : 0;
+              const effectiveBuffer = clamp(baseBuffer * multiplier, 50, 500);
+
+              if (baseBuffer > 0 && dist <= effectiveBuffer) {
                 stillInside.add(f.feature_id);
                 if (!alertState.current.insideFeatureIds.has(f.feature_id)) {
                   newlyInside.push(f);
@@ -147,8 +184,12 @@ export function useSensitiveAreaAlerts() {
               nearestMeters: Number.isFinite(nearestMeters) ? nearestMeters : undefined,
               nearestName: nearestName || undefined,
               nearestCategory: nearestCategory || undefined,
+              nearestBaseBufferM: nearestBaseBufferM || undefined,
+              nearestEffectiveBufferM: nearestEffectiveBufferM || undefined,
               insideCount: stillInside.size,
               lastAlertAt: alertState.current.lastAlertAt || undefined,
+              sensitivity,
+              bufferMultiplier: multiplier,
             }));
 
             const now = Date.now();
@@ -187,7 +228,8 @@ export function useSensitiveAreaAlerts() {
       cancelled = true;
       if (timer) clearInterval(timer);
     };
-  }, []);
+  }, [sensitivity]);
 
-  return { status, debug };
+  // Return setter so UI can change sensitivity at runtime
+  return { status, debug, sensitivity, setSensitivity };
 }
